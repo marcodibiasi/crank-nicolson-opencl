@@ -1,6 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "solver.h"
+#include "ocl_boiler.h"
+
+#ifdef __APPLE__
+#include <OpenCL/opencl.h>
+#else
+#include <CL/cl.h>
+#endif
 
 #define RESET   "\033[0m"
 #define TITLE   "\033[92m" 
