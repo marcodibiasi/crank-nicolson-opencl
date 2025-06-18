@@ -59,6 +59,8 @@ Solver *setup_solver(int width, int height, double dx, double dy, double dt, dou
     setup_coefficients_matrix(solver->rx, &solver->A, width, height);
     //debug_print_CSR(&solver->A, 20);
 
+    setup_opencl_context(solver);
+
     printf(TITLE "\nSolver settings:\n" RESET
        LABEL "\tWidth: " RESET "%d\n"
        LABEL "\tHeight: " RESET "%d\n"
@@ -193,4 +195,19 @@ void debug_print_CSR(const CSRMatrix *A, int n) {
         printf("%.4f ", A->values[i]);
     }
     printf("\n");
+}
+
+void setup_opencl_context(){
+    solver->p = select_platform();
+	solver->d = select_device(p);
+	solver->ctx = create_context(p, d);
+	solver->q = create_queue(ctx, d);
+	solver->prog = create_program("populate_b.ocl", ctx, d);
+
+    //Allocate memory
+    size_t memsize = solver->width * solver->height * sizeof(double);
+
+	cl_int err;
+	cl_mem d_in = clCreateBuffer(solver->ctx, CL_MEM_WRITE_ONLY, memsize, NULL, &err);
+	ocl_check(err, "clCreateBuffer failed");
 }
