@@ -14,7 +14,7 @@
 #define TITLE   "\033[92m" 
 #define LABEL   "\033[32m"  
 
-Solver *setup_solver(int width, int height, double dx, double dy, double dt, double alpha, float *u_curr){
+Solver *setup_solver(int width, int height, float dx, float dy, float dt, float alpha, float *u_curr){
     Solver *solver = malloc(sizeof(Solver));
     if(!solver) return NULL;
 
@@ -50,7 +50,7 @@ Solver *setup_solver(int width, int height, double dx, double dy, double dt, dou
         return NULL;
     }
 
-    solver->b = malloc(solver->width * solver->height * sizeof(double));
+    solver->b = malloc(solver->width * solver->height * sizeof(float));
     if (!solver->b) {
         fprintf(stderr, "Error: Failed to allocate b vector.\n");
         free_solver(solver);
@@ -111,7 +111,7 @@ CSRMatrix allocate_CSR_matrix(int width, int height) {
     }
 
     //The size is estimated for a 5-point stencil
-    matrix.values = malloc(5 * width * height * sizeof(double));
+    matrix.values = malloc(5 * width * height * sizeof(float));
     if (!matrix.values) {
         fprintf(stderr, "Error: Failed to allocate values.\n");
         free(matrix.row_ptr);
@@ -142,7 +142,7 @@ void free_solver(Solver *solver) {
     }
 }
 
-void setup_coefficients_matrix(double rx, CSRMatrix *A, int width, int height) {
+void setup_coefficients_matrix(float rx, CSRMatrix *A, int width, int height) {
     if (!A || !A->row_ptr || !A->col_ind || !A->values) {
         fprintf(stderr, "Error: CSR matrix is not properly allocated.\n");
         return;
@@ -218,7 +218,7 @@ void setup_opencl_context(Solver *solver) {
     size_t lenght = solver->width * solver->height;
 
 	cl_int err;
-	cl->b_buffer = clCreateBuffer(cl->ctx, CL_MEM_WRITE_ONLY, lenght * sizeof(double), NULL, &err);
+	cl->b_buffer = clCreateBuffer(cl->ctx, CL_MEM_WRITE_ONLY, lenght * sizeof(float), NULL, &err);
 	ocl_check(err, "clCreateBuffer failed");
 
     cl->u_current_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -228,15 +228,19 @@ void setup_opencl_context(Solver *solver) {
 
     cl->populate_b = clCreateKernel(cl->prog, "populate_b", &err);  
     ocl_check(err, "clCreateKernel failed");
+    
+    size_t lws, max_wg_size;
+    clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), &max_wg_size, NULL);
 
-    size_t lws;
     clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
         sizeof(size_t), &lws, NULL);
+
+    while((lws * lws) > max_wg_size)
+        lws = lws/2;
     
     cl->preferred_lws[0] = lws;
-    cl->preferred_lws[1] = lws;  
+    cl->preferred_lws[1] = lws; 
     printf(" \n Preferred Local Work Size = [%zu, %zu]\n", cl->preferred_lws[0], cl->preferred_lws[1]);
-
 }
 
 cl_event populate_b(Solver *solver) {
@@ -253,7 +257,7 @@ cl_event populate_b(Solver *solver) {
     ocl_check(err, "clSetKernelArg failed for b_buffer");
     arg++;
 
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(double), &solver->rx);
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(float), &solver->rx);
     ocl_check(err, "clSetKernelArg failed for rx");
     arg++;
 
@@ -265,12 +269,14 @@ cl_event populate_b(Solver *solver) {
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(double) * cl->preferred_lws[0] * cl->preferred_lws[1], NULL);
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(float) * cl->preferred_lws[0] * cl->preferred_lws[1], NULL);
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
     //Launch the kernel
-    size_t gws[2] = {solver->width, solver->height};
+    size_t gws[2] = {round_mul_up(solver->width, cl->preferred_lws[0]), 
+                                 round_mul_up(solver->height, cl->preferred_lws[1])};
+
     cl_event event;
     err = clEnqueueNDRangeKernel(cl->q, cl->populate_b, 2, NULL,
                                  gws, cl->preferred_lws, 0, NULL, &event);

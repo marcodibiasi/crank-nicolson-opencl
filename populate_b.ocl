@@ -1,10 +1,10 @@
 __kernel void populate_b(
-    __global const double* u,
-    __global double* b,
-    const double r,
+    __global const float* u,
+    __global float* b,
+    const float r,
     const int width,
     const int height,
-    __local double* local_u
+    __local float* local_u
 )
 {
     int local_width  = get_local_size(0);
@@ -38,11 +38,11 @@ __kernel void populate_b(
 
     if (gi >= width || gj >= height) return;
 
-    double center = local_u[local_index];
-    double up     = local_u[local_index - (local_width + 2)];
-    double down   = local_u[local_index + (local_width + 2)];
-    double left   = local_u[local_index - 1];
-    double right  = local_u[local_index + 1];
+    float center = local_u[local_index];
+    float up     = local_u[local_index - (local_width + 2)];
+    float down   = local_u[local_index + (local_width + 2)];
+    float left   = local_u[local_index - 1];
+    float right  = local_u[local_index + 1];
 
     // Compute the value of b using the finite difference method
     b[global_index] = (1 - 2*r) * center + 0.5 * r * (up + down + left + right);
