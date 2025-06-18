@@ -1,6 +1,7 @@
 #ifdef __APPLE__
 #include <OpenCL/opencl.h>
 #else
+#define CL_TARGET_OPENCL_VERSION 120
 #include <CL/cl.h>
 #endif
 
@@ -17,7 +18,10 @@ typedef struct{
 	cl_command_queue q;
 	cl_program prog;
     cl_kernel populate_b;
+    cl_mem u_current_buffer;
     cl_mem b_buffer;
+
+    size_t preferred_lws[2];
 } OpenCLContext;
 
 typedef struct {
@@ -44,3 +48,4 @@ void free_CSR_matrix(CSRMatrix *matrix);
 void setup_coefficients_matrix(double rx, CSRMatrix *A, int width, int height);
 void debug_print_CSR(const CSRMatrix *A, int n);
 void setup_opencl_context(Solver *solver);
+cl_event populate_b(Solver *solver);

@@ -6,6 +6,7 @@
 #ifdef __APPLE__
 #include <OpenCL/opencl.h>
 #else
+#define CL_TARGET_OPENCL_VERSION 120
 #include <CL/cl.h>
 #endif
 
@@ -69,6 +70,14 @@ Solver *setup_solver(int width, int height, double dx, double dy, double dt, dou
        LABEL "\tdt: " RESET "%.2f\n"
        LABEL "\talpha: " RESET "%.2f\n\n",
        width, height, dx, dy, dt, alpha);
+
+    cl_event event = populate_b(solver);
+    
+    // DEBUGGING ONGOING 
+    for (int i = 0; i < 20; i++){
+        printf(" %.2f ", solver->b[i]);
+    }
+    
     
     return solver;
 }
@@ -206,9 +215,66 @@ void setup_opencl_context(Solver *solver) {
 	cl->prog = create_program("populate_b.ocl", cl->ctx, cl->d);
 
     //Allocate memory
-    size_t memsize = solver->width * solver->height * sizeof(double);
+    size_t lenght = solver->width * solver->height;
 
 	cl_int err;
-	cl_mem d_in = clCreateBuffer(cl->ctx, CL_MEM_WRITE_ONLY, memsize, NULL, &err);
+	cl->b_buffer = clCreateBuffer(cl->ctx, CL_MEM_WRITE_ONLY, lenght * sizeof(double), NULL, &err);
 	ocl_check(err, "clCreateBuffer failed");
+
+    cl->u_current_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                                          lenght * sizeof(float),
+                                          solver->u_current, &err);
+    ocl_check(err, "clCreateBuffer failed for u_current_buffer");
+
+    cl->populate_b = clCreateKernel(cl->prog, "populate_b", &err);  
+    ocl_check(err, "clCreateKernel failed");
+
+    size_t lws;
+    clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
+        sizeof(size_t), &lws, NULL);
+    
+    cl->preferred_lws[0] = lws;
+    cl->preferred_lws[1] = lws;  
+    printf(" \n Preferred Local Work Size = [%zu, %zu]\n", cl->preferred_lws[0], cl->preferred_lws[1]);
+
+}
+
+cl_event populate_b(Solver *solver) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+    cl_int arg = 0;
+
+    //Set kernel arguments
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(cl->u_current_buffer), &cl->u_current_buffer);
+    ocl_check(err, "clSetKernelArg failed for u_current_buffer");
+    arg++;
+
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(cl->b_buffer), &cl->b_buffer);
+    ocl_check(err, "clSetKernelArg failed for b_buffer");
+    arg++;
+
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(double), &solver->rx);
+    ocl_check(err, "clSetKernelArg failed for rx");
+    arg++;
+
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(int), &solver->width);
+    ocl_check(err, "clSetKernelArg failed for width");
+    arg++;
+
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(int), &solver->height);
+    ocl_check(err, "clSetKernelArg failed for height");
+    arg++;
+
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(double) * cl->preferred_lws[0] * cl->preferred_lws[1], NULL);
+    ocl_check(err, "clSetKernelArg failed for height");
+    arg++;
+
+    //Launch the kernel
+    size_t gws[2] = {solver->width, solver->height};
+    cl_event event;
+    err = clEnqueueNDRangeKernel(cl->q, cl->populate_b, 2, NULL,
+                                 gws, cl->preferred_lws, 0, NULL, &event);
+    ocl_check(err, "clEnqueueNDRangeKernel failed");
+
+    return event;
 }
