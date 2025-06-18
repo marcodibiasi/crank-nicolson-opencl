@@ -11,7 +11,10 @@ else ifeq ($(UNAME_S),Linux)
     OPENCL_FLAGS = -lOpenCL
 else ifeq ($(OS),Windows_NT)
     OPENCL_FLAGS = -lOpenCL
+    CFLAGS += -I/mingw64/include
+    CFLAGS += -L/mingw64/lib
+    CFLAGS += -Wno-deprecated-declarations
 endif
 
 $(TARGET): $(OBJS)
-	$(CC) $(OBJS) -o $(TARGET) $(OPENCL_FLAGS)
+	$(CC) $(CFLAGS) $(OBJS) -o $(TARGET) $(OPENCL_FLAGS)

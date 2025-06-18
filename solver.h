@@ -43,3 +43,4 @@ void free_solver(Solver *solver);
 void free_CSR_matrix(CSRMatrix *matrix);
 void setup_coefficients_matrix(double rx, CSRMatrix *A, int width, int height);
 void debug_print_CSR(const CSRMatrix *A, int n);
+void setup_opencl_context(Solver *solver);

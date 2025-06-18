@@ -197,17 +197,18 @@ void debug_print_CSR(const CSRMatrix *A, int n) {
     printf("\n");
 }
 
-void setup_opencl_context(){
-    solver->p = select_platform();
-	solver->d = select_device(p);
-	solver->ctx = create_context(p, d);
-	solver->q = create_queue(ctx, d);
-	solver->prog = create_program("populate_b.ocl", ctx, d);
+void setup_opencl_context(Solver *solver) {
+    OpenCLContext *cl = &solver->cl;
+    cl->p = select_platform();
+	cl->d = select_device(cl->p);
+	cl->ctx = create_context(cl->p, cl->d);
+	cl->q = create_queue(cl->ctx, cl->d);
+	cl->prog = create_program("populate_b.ocl", cl->ctx, cl->d);
 
     //Allocate memory
     size_t memsize = solver->width * solver->height * sizeof(double);
 
 	cl_int err;
-	cl_mem d_in = clCreateBuffer(solver->ctx, CL_MEM_WRITE_ONLY, memsize, NULL, &err);
+	cl_mem d_in = clCreateBuffer(cl->ctx, CL_MEM_WRITE_ONLY, memsize, NULL, &err);
 	ocl_check(err, "clCreateBuffer failed");
 }
