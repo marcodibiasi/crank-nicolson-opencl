@@ -47,3 +47,6 @@ __kernel void populate_b(
     // Compute the value of b using the finite difference method
     b[global_index] = (1 - 2*r) * center + 0.5 * r * (up + down + left + right);
 }
+
+__kernel void conjugate_gradient()
+{}

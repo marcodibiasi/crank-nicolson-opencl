@@ -103,6 +103,19 @@ void update_system(Solver *solver){
     cl_event populate_b_evt = populate_b(solver);
     clWaitForEvents(1, &populate_b_evt);
     clReleaseEvent(populate_b_evt);
+
+    //cl_event cg_evt = conjugate_gradient(solver);
+
+    // Saving the result to u_current (host memory)
+    cl_int err;
+    float *frame = (float*)clEnqueueMapBuffer(solver->cl.q, solver->cl.u_current_buffer, CL_TRUE, 
+        CL_MAP_READ, 0, solver->width * solver->height * sizeof(float), 0, NULL, NULL, &err);
+    ocl_check(err, "clEnqueueMapBuffer failed");
+
+    memcpy(solver->u_current, frame, solver->width * solver->height * sizeof(float));
+
+    clEnqueueUnmapMemObject(solver->cl.q, solver->cl.u_current_buffer, frame, 0, NULL, NULL);
+    clFinish(solver->cl.q);
 }
 
 float **run_simulation(Solver *solver, int steps) {
@@ -112,14 +125,19 @@ float **run_simulation(Solver *solver, int steps) {
     }
 
     float **frames = malloc(steps * sizeof(float*));
-    for (size_t i = 0; i < steps; i++)
-        frames[i] = malloc(solver->width * solver->height * sizeof(float));
+
+    frames[0] = malloc(solver->width * solver->height * sizeof(float));
+    memcpy(frames[0], solver->u_current, solver->width * solver->height * sizeof(float));
 
     while(solver->time_step < steps) {   
         printf("Step %d\n", solver->time_step);
+
         update_system(solver);
-        
+
         solver->time_step++;
+
+        frames[solver->time_step] = malloc(solver->width * solver->height * sizeof(float));
+        memcpy(frames[solver->time_step], solver->u_current, solver->width * solver->height * sizeof(float));
     }
 
     clFinish(solver->cl.q);
@@ -245,35 +263,61 @@ void setup_opencl_context(Solver *solver) {
 	cl->d = select_device(cl->p);
 	cl->ctx = create_context(cl->p, cl->d);
 	cl->q = create_queue(cl->ctx, cl->d);
-	cl->prog = create_program("populate_b.ocl", cl->ctx, cl->d);
+	cl->prog = create_program("simulation_kernels.ocl", cl->ctx, cl->d);
 
     //Allocate memory
     size_t lenght = solver->width * solver->height;
 
 	cl_int err;
+
+    // Allocate OpenCL buffers
 	cl->b_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
 	ocl_check(err, "clCreateBuffer failed");
 
-    cl->u_current_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
-                                          lenght * sizeof(float),
-                                          solver->u_current, &err);
-    ocl_check(err, "clCreateBuffer failed for u_current_buffer");
+    cl->u_current_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
+                        lenght * sizeof(float), solver->u_current, &err);
+    ocl_check(err, "clCreateBuffer failed for u_buffer");
 
+    //TODO: Allocate CSR matrix buffers
+    
+    // Create kernels
     cl->populate_b = clCreateKernel(cl->prog, "populate_b", &err);  
     ocl_check(err, "clCreateKernel failed");
-    
-    size_t lws, max_wg_size;
-    clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), &max_wg_size, NULL);
 
+    cl->conjugate_gradient = clCreateKernel(cl->prog, "conjugate_gradient", &err);  
+    ocl_check(err, "clCreateKernel failed");
+
+    size_t populate_b_lws, populate_b_max_wg_size;
+    size_t conjugate_gradient_lws, conjugate_gradient_max_wg_size;
+    
+    // Local work sizes
+    // Get preferred local work size for populate_b kernel and resize as needed
+    clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), 
+        &populate_b_max_wg_size, NULL);
     clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
-        sizeof(size_t), &lws, NULL);
+        sizeof(size_t), &populate_b_lws, NULL);
 
-    while((lws * lws) > max_wg_size)
-        lws = lws/2;
-    
-    cl->preferred_lws[0] = lws;
-    cl->preferred_lws[1] = lws; 
-    printf(" \n Preferred Local Work Size = [%zu, %zu]\n", cl->preferred_lws[0], cl->preferred_lws[1]);
+    while((populate_b_lws * populate_b_lws) > populate_b_max_wg_size)
+        populate_b_lws = populate_b_lws/2;
+
+    solver->cl.populate_b_preferred_lws[0] = populate_b_lws;
+    solver->cl.populate_b_preferred_lws[1] = populate_b_lws;
+
+    // Get preferred local work size for conjugate_gradient kernel and resize as needed
+    clGetKernelWorkGroupInfo(cl->conjugate_gradient, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), 
+        &conjugate_gradient_max_wg_size, NULL);
+    clGetKernelWorkGroupInfo(cl->conjugate_gradient, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
+        sizeof(size_t), &conjugate_gradient_lws, NULL); 
+
+    while((conjugate_gradient_lws * conjugate_gradient_lws) > conjugate_gradient_max_wg_size)
+        conjugate_gradient_lws = conjugate_gradient_lws/2; 
+
+    solver->cl.conjugate_gradient_preferred_lws[0] = conjugate_gradient_lws;
+    solver->cl.conjugate_gradient_preferred_lws[1] = conjugate_gradient_lws;
+
+    printf("\nPreferred Local Work Size for populate_b kernel = [%zu, %zu]\n", populate_b_lws, populate_b_lws);
+    printf("Preferred Local Work Size for conjugate_gradient kernel = [%zu, %zu]\n", 
+           conjugate_gradient_lws, conjugate_gradient_lws);
 }
 
 cl_event populate_b(Solver *solver) {
@@ -302,18 +346,19 @@ cl_event populate_b(Solver *solver) {
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
-    err = clSetKernelArg(cl->populate_b, arg, 
-                                 sizeof(float) * (cl->preferred_lws[0] + 2) * (cl->preferred_lws[1] + 2), NULL);
+    size_t local_mem_size = sizeof(float) * (cl->populate_b_preferred_lws[0] + 2) * 
+                            (cl->populate_b_preferred_lws[1] + 2);
+    err = clSetKernelArg(cl->populate_b, arg, local_mem_size, NULL);
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
     //Launch the kernel
-    size_t gws[2] = {round_mul_up(solver->width, cl->preferred_lws[0]), 
-                                 round_mul_up(solver->height, cl->preferred_lws[1])};
+    size_t gws[2] = {round_mul_up(solver->width, cl->populate_b_preferred_lws[0]), 
+            round_mul_up(solver->height, cl->populate_b_preferred_lws[1])};
 
     cl_event event;
     err = clEnqueueNDRangeKernel(cl->q, cl->populate_b, 2, NULL,
-                                 gws, cl->preferred_lws, 0, NULL, &event);
+            gws, cl->populate_b_preferred_lws, 0, NULL, &event);
     ocl_check(err, "clEnqueueNDRangeKernel failed");
 
     return event;

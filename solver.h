@@ -17,11 +17,20 @@ typedef struct{
 	cl_context ctx;
 	cl_command_queue q;
 	cl_program prog;
-    cl_kernel populate_b;
+
     cl_mem u_current_buffer;
     cl_mem b_buffer;
 
-    size_t preferred_lws[2];
+    // CSRMatrix buffers
+    cl_mem csr_row_ptr_buffer;
+    cl_mem csr_col_ind_buffer;
+    cl_mem csr_values_buffer;
+
+    size_t populate_b_preferred_lws[2];
+    size_t conjugate_gradient_preferred_lws[2];
+
+    cl_kernel populate_b;
+    cl_kernel conjugate_gradient;
 } OpenCLContext;
 
 typedef struct {
