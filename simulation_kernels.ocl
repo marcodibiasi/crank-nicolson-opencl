@@ -48,5 +48,14 @@ __kernel void populate_b(
     b[global_index] = (1 - 2*r) * center + 0.5 * r * (up + down + left + right);
 }
 
-__kernel void conjugate_gradient()
+/*
+Instead of having a kernel for the Conjugate Gradient method,
+it is better to have separate kernels for each operation.
+ */
+
+__kernel void dot_product(
+    __global const float* a,
+    __global const float* b,
+    __global float* result,
+    const unsigned int size)
 {}

@@ -27,10 +27,10 @@ typedef struct{
     cl_mem csr_values_buffer;
 
     size_t populate_b_preferred_lws[2];
-    size_t conjugate_gradient_preferred_lws[2];
+    size_t dot_product_preferred_lws[2];
 
     cl_kernel populate_b;
-    cl_kernel conjugate_gradient;
+    cl_kernel dot_product;
 } OpenCLContext;
 
 typedef struct {

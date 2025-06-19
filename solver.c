@@ -104,8 +104,6 @@ void update_system(Solver *solver){
     clWaitForEvents(1, &populate_b_evt);
     clReleaseEvent(populate_b_evt);
 
-    //cl_event cg_evt = conjugate_gradient(solver);
-
     // Saving the result to u_current (host memory)
     cl_int err;
     float *frame = (float*)clEnqueueMapBuffer(solver->cl.q, solver->cl.u_current_buffer, CL_TRUE, 
@@ -116,6 +114,11 @@ void update_system(Solver *solver){
 
     clEnqueueUnmapMemObject(solver->cl.q, solver->cl.u_current_buffer, frame, 0, NULL, NULL);
     clFinish(solver->cl.q);
+}
+
+//The type of the function may change in the future
+void conjugate_gradient(Solver *solver) {
+    // TODO: Implement the conjugate gradient method for solving the linear system
 }
 
 float **run_simulation(Solver *solver, int steps) {
@@ -278,17 +281,28 @@ void setup_opencl_context(Solver *solver) {
                         lenght * sizeof(float), solver->u_current, &err);
     ocl_check(err, "clCreateBuffer failed for u_buffer");
 
-    //TODO: Allocate CSR matrix buffers
+    //CSR Matrix buffers
+    cl->csr_row_ptr_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                        (lenght + 1) * sizeof(int), solver->A.row_ptr, &err);
+    ocl_check(err, "clCreateBuffer failed for csr_row_ptr_buffer");
+
+    cl->csr_col_ind_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                        5 * lenght * sizeof(int), solver->A.col_ind, &err);
+    ocl_check(err, "clCreateBuffer failed for csr_col_ind_buffer");
+
+    cl->csr_values_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
+                        5 * lenght * sizeof(float), solver->A.values, &err);
+    ocl_check(err, "clCreateBuffer failed for csr_values_buffer");
     
     // Create kernels
     cl->populate_b = clCreateKernel(cl->prog, "populate_b", &err);  
     ocl_check(err, "clCreateKernel failed");
 
-    cl->conjugate_gradient = clCreateKernel(cl->prog, "conjugate_gradient", &err);  
+    cl->dot_product = clCreateKernel(cl->prog, "dot_product", &err);  
     ocl_check(err, "clCreateKernel failed");
 
     size_t populate_b_lws, populate_b_max_wg_size;
-    size_t conjugate_gradient_lws, conjugate_gradient_max_wg_size;
+    size_t dot_product_lws, dot_product_max_wg_size;
     
     // Local work sizes
     // Get preferred local work size for populate_b kernel and resize as needed
@@ -303,21 +317,21 @@ void setup_opencl_context(Solver *solver) {
     solver->cl.populate_b_preferred_lws[0] = populate_b_lws;
     solver->cl.populate_b_preferred_lws[1] = populate_b_lws;
 
-    // Get preferred local work size for conjugate_gradient kernel and resize as needed
-    clGetKernelWorkGroupInfo(cl->conjugate_gradient, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), 
-        &conjugate_gradient_max_wg_size, NULL);
-    clGetKernelWorkGroupInfo(cl->conjugate_gradient, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
-        sizeof(size_t), &conjugate_gradient_lws, NULL); 
+    // Get preferred local work size for dot_product kernel and resize as needed
+    clGetKernelWorkGroupInfo(cl->dot_product, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), 
+        &dot_product_max_wg_size, NULL);
+    clGetKernelWorkGroupInfo(cl->dot_product, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
+        sizeof(size_t), &dot_product_lws, NULL); 
 
-    while((conjugate_gradient_lws * conjugate_gradient_lws) > conjugate_gradient_max_wg_size)
-        conjugate_gradient_lws = conjugate_gradient_lws/2; 
+    while((dot_product_lws * dot_product_lws) > dot_product_max_wg_size)
+        dot_product_lws = dot_product_lws/2; 
 
-    solver->cl.conjugate_gradient_preferred_lws[0] = conjugate_gradient_lws;
-    solver->cl.conjugate_gradient_preferred_lws[1] = conjugate_gradient_lws;
+    solver->cl.dot_product_preferred_lws[0] = dot_product_lws;
+    solver->cl.dot_product_preferred_lws[1] = dot_product_lws;
 
     printf("\nPreferred Local Work Size for populate_b kernel = [%zu, %zu]\n", populate_b_lws, populate_b_lws);
-    printf("Preferred Local Work Size for conjugate_gradient kernel = [%zu, %zu]\n", 
-           conjugate_gradient_lws, conjugate_gradient_lws);
+    printf("Preferred Local Work Size for dot_product kernel = [%zu, %zu]\n", 
+           dot_product_lws, dot_product_lws);
 }
 
 cl_event populate_b(Solver *solver) {
