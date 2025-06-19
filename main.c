@@ -35,14 +35,24 @@ int main(int argc, char *argv[]) {
     //fast_debug(norm_img, 20);
 
     /*
-    SECOND STEP: SOLVER
+    SECOND STEP: SETUP SOLVER (it does setup the OpenCL context as well)
     */
 
     Solver *solver = setup_solver(width, height, 1, 1, 0.2, 1.0, norm_heatmap);
 
+    /*
+    THIRST STEP: RUN SIMULATION
+    */
+
+    run_simulation(solver, 10);
+
+    /*
+    FORTH STEP: FREE RESOURCES
+    */
+
     free(heatmap);
     free(norm_heatmap);
-    free(solver);
+    free_solver(solver);
     return 0;
 }
 

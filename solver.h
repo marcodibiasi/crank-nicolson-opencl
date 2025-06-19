@@ -35,13 +35,21 @@ typedef struct {
     float *u_current;  //Current state of the system
     float *u_next;     //Next state of the system
     CSRMatrix A;  //Sparse matrix in CSR format for the system of equations
-    float *b;    //Right-hand side vector for the system of equations
+    float *b;    
+    /*
+    Right-hand side vector for the system of equations, 
+    just for the sake of visualization and debugging. 
+    Having an OpenCL buffer is already enough, since b is used only for 
+    the calculation of the linear system during the intemediate steps
+    and not as an input or output of the OpenCL kernel.
+    */
 
     OpenCLContext cl;
 } Solver;
 
 Solver *setup_solver(int width, int height, float dx, float dy, float dt, float alpha, float *u_curr);
 void update_system(Solver *solver);
+void run_simulation(Solver *solver, int steps);
 CSRMatrix allocate_CSR_matrix(int width, int height);
 void free_solver(Solver *solver);
 void free_CSR_matrix(CSRMatrix *matrix);

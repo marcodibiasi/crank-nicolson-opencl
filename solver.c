@@ -67,18 +67,29 @@ Solver *setup_solver(int width, int height, float dx, float dy, float dt, float 
        LABEL "\tHeight: " RESET "%d\n"
        LABEL "\tdx: " RESET "%.2f\n"
        LABEL "\tdy: " RESET "%.2f\n"
+       LABEL "\trx: " RESET "%.2f\n"
+       LABEL "\try: " RESET "%.2f\n"
        LABEL "\tdt: " RESET "%.2f\n"
        LABEL "\talpha: " RESET "%.2f\n\n",
-       width, height, dx, dy, dt, alpha);
+       width, height, dx, dy, solver->rx, solver->ry, dt, alpha);
+  
+       
+    // CHECHING IF THE B VECTOR IS CORRECTLY POPULATED
+    // DEBUGGING START
+    
+    // cl_int err; 
+    // err = clEnqueueReadBuffer(solver->cl.q, solver->cl.b_buffer, CL_TRUE, 0,
+    //                       width * height * sizeof(float), solver->b,
+    //                       0, NULL, NULL);
+    // ocl_check(err, "clEnqueueReadBuffer failed");
 
-    cl_event event = populate_b(solver);
+    // for (int i = 0; i < 20; i++){
+    //     printf(" %.2f ", solver->b[i]);
+    // }
     
-    // DEBUGGING ONGOING 
-    for (int i = 0; i < 20; i++){
-        printf(" %.2f ", solver->b[i]);
-    }
+    // DEBUGGING END
     
-    
+
     return solver;
 }
 
@@ -89,7 +100,25 @@ void update_system(Solver *solver){
         return;
     }
 
-    //TODO: calculate the right-hand side vector b
+    cl_event populate_b_evt = populate_b(solver);
+    clWaitForEvents(1, &populate_b_evt);
+    clReleaseEvent(populate_b_evt);
+}
+
+void run_simulation(Solver *solver, int steps) {
+    if (!solver) {
+        fprintf(stderr, "Error: Solver is NULL.\n");
+        return;
+    }
+
+    while(solver->time_step < steps) {   
+        printf("Step %d\n", solver->time_step);
+        update_system(solver);
+        
+        solver->time_step++;
+    }
+
+    clFinish(solver->cl.q);
 }
 
 CSRMatrix allocate_CSR_matrix(int width, int height) {
@@ -134,7 +163,6 @@ void free_CSR_matrix(CSRMatrix *matrix) {
 
 void free_solver(Solver *solver) {
     if (solver) {
-        free(solver->u_current);
         free(solver->u_next);
         free(solver->b);
         free_CSR_matrix(&solver->A);
@@ -218,7 +246,7 @@ void setup_opencl_context(Solver *solver) {
     size_t lenght = solver->width * solver->height;
 
 	cl_int err;
-	cl->b_buffer = clCreateBuffer(cl->ctx, CL_MEM_WRITE_ONLY, lenght * sizeof(float), NULL, &err);
+	cl->b_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
 	ocl_check(err, "clCreateBuffer failed");
 
     cl->u_current_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,
@@ -249,11 +277,11 @@ cl_event populate_b(Solver *solver) {
     cl_int arg = 0;
 
     //Set kernel arguments
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(cl->u_current_buffer), &cl->u_current_buffer);
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(cl_mem), &cl->u_current_buffer);
     ocl_check(err, "clSetKernelArg failed for u_current_buffer");
     arg++;
 
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(cl->b_buffer), &cl->b_buffer);
+    err = clSetKernelArg(cl->populate_b, arg, sizeof(cl_mem), &cl->b_buffer);
     ocl_check(err, "clSetKernelArg failed for b_buffer");
     arg++;
 
@@ -269,7 +297,8 @@ cl_event populate_b(Solver *solver) {
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(float) * cl->preferred_lws[0] * cl->preferred_lws[1], NULL);
+    err = clSetKernelArg(cl->populate_b, arg, 
+                                 sizeof(float) * (cl->preferred_lws[0] + 2) * (cl->preferred_lws[1] + 2), NULL);
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
