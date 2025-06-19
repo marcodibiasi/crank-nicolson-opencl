@@ -105,11 +105,15 @@ void update_system(Solver *solver){
     clReleaseEvent(populate_b_evt);
 }
 
-void run_simulation(Solver *solver, int steps) {
+float **run_simulation(Solver *solver, int steps) {
     if (!solver) {
         fprintf(stderr, "Error: Solver is NULL.\n");
-        return;
+        return NULL;
     }
+
+    float **frames = malloc(steps * sizeof(float*));
+    for (size_t i = 0; i < steps; i++)
+        frames[i] = malloc(solver->width * solver->height * sizeof(float));
 
     while(solver->time_step < steps) {   
         printf("Step %d\n", solver->time_step);
@@ -119,6 +123,7 @@ void run_simulation(Solver *solver, int steps) {
     }
 
     clFinish(solver->cl.q);
+    return frames;
 }
 
 CSRMatrix allocate_CSR_matrix(int width, int height) {

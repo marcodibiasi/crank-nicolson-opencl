@@ -51,3 +51,11 @@ float *pgm_normalisation(int* matrix, int n) {
 
     return normalized;
 }
+
+/*
+TODO: Conversion from the simulation frames to the image format
+    - Convert the values from [0, 1] range to [0, 255] range
+    - Convert all the frames from 1D array to 2D matrix
+    - Create (if needed) a directory for the output images
+    - Save the frames as PNG files into the directory (additional: PGM format support)
+*/

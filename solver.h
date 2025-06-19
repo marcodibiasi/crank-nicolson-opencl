@@ -49,7 +49,7 @@ typedef struct {
 
 Solver *setup_solver(int width, int height, float dx, float dy, float dt, float alpha, float *u_curr);
 void update_system(Solver *solver);
-void run_simulation(Solver *solver, int steps);
+float** run_simulation(Solver *solver, int steps);
 CSRMatrix allocate_CSR_matrix(int width, int height);
 void free_solver(Solver *solver);
 void free_CSR_matrix(CSRMatrix *matrix);

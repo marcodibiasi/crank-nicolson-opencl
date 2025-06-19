@@ -44,7 +44,18 @@ int main(int argc, char *argv[]) {
     THIRST STEP: RUN SIMULATION
     */
 
-    run_simulation(solver, 10);
+    //Keeping the image conversion logic outside the simulation
+    int n_steps = 10;
+    float **frames = malloc(n_steps * sizeof(float*));
+    for (size_t i = 0; i < n_steps; i++)
+        frames[i] = malloc(width * height * sizeof(float));
+    
+    /*
+    The simulation returns n frames needed for visualization and analysis
+    In such way it is possible to visualize the full heatmap evolution or just a specific step
+    Additionally, it is better to not save the image inside the main loop, to avoid overhead
+    */
+    frames = run_simulation(solver, n_steps);
 
     /*
     FORTH STEP: FREE RESOURCES
