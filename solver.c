@@ -119,6 +119,17 @@ void update_system(Solver *solver){
 //The type of the function may change in the future
 void conjugate_gradient(Solver *solver) {
     // TODO: Implement the conjugate gradient method for solving the linear system
+    cl_int err;
+    OpenCLContext *cl = &solver->cl;
+
+    // First step: Calculate initial residue r = b - Ax
+    size_t lenght = solver->width * solver->height;
+    cl_mem r_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
+	ocl_check(err, "clCreateBuffer failed");
+
+    cl_event mat_vec_multiply_evt = mat_vec_multiply(solver, cl->x_buffer, r_buffer);
+    clWaitForEvents(1, &mat_vec_multiply_evt);
+    clReleaseEvent(mat_vec_multiply_evt);
 }
 
 float **run_simulation(Solver *solver, int steps) {
@@ -127,11 +138,20 @@ float **run_simulation(Solver *solver, int steps) {
         return NULL;
     }
 
+
+    // Handling frames vector to store all the frames from the simulation
     float **frames = malloc(steps * sizeof(float*));
 
     frames[0] = malloc(solver->width * solver->height * sizeof(float));
     memcpy(frames[0], solver->u_current, solver->width * solver->height * sizeof(float));
 
+    // Filling the x0 vector to start the resolution of Ax = b
+    cl_event zero_fill_evt = zero_fill(solver);
+    clWaitForEvents(1, &zero_fill_evt);
+    clReleaseEvent(zero_fill_evt);
+    
+
+    // Main loop
     while(solver->time_step < steps) {   
         printf("Step %d\n", solver->time_step);
 
@@ -266,7 +286,7 @@ void setup_opencl_context(Solver *solver) {
 	cl->d = select_device(cl->p);
 	cl->ctx = create_context(cl->p, cl->d);
 	cl->q = create_queue(cl->ctx, cl->d);
-	cl->prog = create_program("simulation_kernels.ocl", cl->ctx, cl->d);
+	cl->prog = create_program("simulation_kernels.c", cl->ctx, cl->d);
 
     //Allocate memory
     size_t lenght = solver->width * solver->height;
@@ -279,6 +299,9 @@ void setup_opencl_context(Solver *solver) {
 
     cl->u_current_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE | CL_MEM_COPY_HOST_PTR,
                         lenght * sizeof(float), solver->u_current, &err);
+    ocl_check(err, "clCreateBuffer failed for u_buffer");
+
+    cl->x_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
     ocl_check(err, "clCreateBuffer failed for u_buffer");
 
     //CSR Matrix buffers
@@ -295,43 +318,75 @@ void setup_opencl_context(Solver *solver) {
     ocl_check(err, "clCreateBuffer failed for csr_values_buffer");
     
     // Create kernels
+    cl->zero_fill = clCreateKernel(cl->prog, "fill_vector", &err);
+    ocl_check(err, "clCreateKernel failed");
+
     cl->populate_b = clCreateKernel(cl->prog, "populate_b", &err);  
     ocl_check(err, "clCreateKernel failed");
 
     cl->dot_product = clCreateKernel(cl->prog, "dot_product", &err);  
     ocl_check(err, "clCreateKernel failed");
 
-    size_t populate_b_lws, populate_b_max_wg_size;
-    size_t dot_product_lws, dot_product_max_wg_size;
+    cl->mat_vec_multiply = clCreateKernel(cl->prog, "mat_vec_multiply", &err);  
+    ocl_check(err, "clCreateKernel failed");
     
+    // New local work size logic
+    cl->lws = 16;
+
+    // DEPRECATED: Going for a version with an unified local work size for ease
+
+    // size_t populate_b_lws, populate_b_max_wg_size;
+    // size_t dot_product_lws, dot_product_max_wg_size;
+
     // Local work sizes
     // Get preferred local work size for populate_b kernel and resize as needed
-    clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), 
-        &populate_b_max_wg_size, NULL);
-    clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
-        sizeof(size_t), &populate_b_lws, NULL);
 
-    while((populate_b_lws * populate_b_lws) > populate_b_max_wg_size)
-        populate_b_lws = populate_b_lws/2;
+    // clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), 
+    //     &populate_b_max_wg_size, NULL);
+    // clGetKernelWorkGroupInfo(cl->populate_b, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
+    //     sizeof(size_t), &populate_b_lws, NULL);
 
-    solver->cl.populate_b_preferred_lws[0] = populate_b_lws;
-    solver->cl.populate_b_preferred_lws[1] = populate_b_lws;
+    // while((populate_b_lws * populate_b_lws) > populate_b_max_wg_size)
+    //     populate_b_lws = populate_b_lws/2;
 
-    // Get preferred local work size for dot_product kernel and resize as needed
-    clGetKernelWorkGroupInfo(cl->dot_product, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), 
-        &dot_product_max_wg_size, NULL);
-    clGetKernelWorkGroupInfo(cl->dot_product, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
-        sizeof(size_t), &dot_product_lws, NULL); 
+    // solver->cl.populate_b_preferred_lws[0] = populate_b_lws;
+    // solver->cl.populate_b_preferred_lws[1] = populate_b_lws;
 
-    while((dot_product_lws * dot_product_lws) > dot_product_max_wg_size)
-        dot_product_lws = dot_product_lws/2; 
+    // // Get preferred local work size for dot_product kernel and resize as needed
+    // clGetKernelWorkGroupInfo(cl->dot_product, cl->d, CL_KERNEL_WORK_GROUP_SIZE, sizeof(size_t), 
+    //     &dot_product_max_wg_size, NULL);
+    // clGetKernelWorkGroupInfo(cl->dot_product, cl->d, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE, 
+    //     sizeof(size_t), &dot_product_lws, NULL); 
 
-    solver->cl.dot_product_preferred_lws[0] = dot_product_lws;
-    solver->cl.dot_product_preferred_lws[1] = dot_product_lws;
+    // while((dot_product_lws * dot_product_lws) > dot_product_max_wg_size)
+    //     dot_product_lws = dot_product_lws/2; 
 
-    printf("\nPreferred Local Work Size for populate_b kernel = [%zu, %zu]\n", populate_b_lws, populate_b_lws);
-    printf("Preferred Local Work Size for dot_product kernel = [%zu, %zu]\n", 
-           dot_product_lws, dot_product_lws);
+    // solver->cl.dot_product_preferred_lws[0] = dot_product_lws;
+    // solver->cl.dot_product_preferred_lws[1] = dot_product_lws;
+
+    // printf("\nPreferred Local Work Size for populate_b kernel = [%zu, %zu]\n", populate_b_lws, populate_b_lws);
+    // printf("Preferred Local Work Size for dot_product kernel = [%zu, %zu]\n", 
+    //        dot_product_lws, dot_product_lws);
+}
+
+cl_event zero_fill(Solver* solver) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+    cl_int arg = 0;
+
+    // Set kernel arguments 
+    err = clSetKernelArg(cl->zero_fill, arg, sizeof(cl_mem), &cl->x_buffer);
+    ocl_check(err, "clSetKernelArg failed for x_buffer");
+    arg++;
+
+    // Launch the kernel 
+    cl_event event;
+    size_t global_size = (solver->width * solver->height);
+    err = clEnqueueNDRangeKernel(cl->q, cl->zero_fill, 1, NULL,
+            &global_size, NULL, 0, NULL, &event);
+    ocl_check(err, "clEnqueueNDRangeKernel failed");
+
+    return event;
 }
 
 cl_event populate_b(Solver *solver) {
@@ -339,7 +394,7 @@ cl_event populate_b(Solver *solver) {
     cl_int err;
     cl_int arg = 0;
 
-    //Set kernel arguments
+    // Set kernel arguments
     err = clSetKernelArg(cl->populate_b, arg, sizeof(cl_mem), &cl->u_current_buffer);
     ocl_check(err, "clSetKernelArg failed for u_current_buffer");
     arg++;
@@ -360,19 +415,69 @@ cl_event populate_b(Solver *solver) {
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
-    size_t local_mem_size = sizeof(float) * (cl->populate_b_preferred_lws[0] + 2) * 
-                            (cl->populate_b_preferred_lws[1] + 2);
+    // size_t local_mem_size = sizeof(float) * (cl->populate_b_preferred_lws[0] + 2) * 
+    //                         (cl->populate_b_preferred_lws[1] + 2);
+
+    size_t local_mem_size = sizeof(float) * (cl->lws + 2) * (cl->lws + 2);
     err = clSetKernelArg(cl->populate_b, arg, local_mem_size, NULL);
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
-    //Launch the kernel
-    size_t gws[2] = {round_mul_up(solver->width, cl->populate_b_preferred_lws[0]), 
-            round_mul_up(solver->height, cl->populate_b_preferred_lws[1])};
+    // Launch the kernel
+    // size_t gws[2] = {round_mul_up(solver->width, cl->populate_b_preferred_lws[0]), 
+    //         round_mul_up(solver->height, cl->populate_b_preferred_lws[1])};
+    size_t gws[2] = {round_mul_up(solver->width, cl->lws), round_mul_up(solver->height, cl->lws)};
+    size_t lws[2] = {cl->lws, cl->lws};
 
     cl_event event;
-    err = clEnqueueNDRangeKernel(cl->q, cl->populate_b, 2, NULL,
-            gws, cl->populate_b_preferred_lws, 0, NULL, &event);
+    err = clEnqueueNDRangeKernel(cl->q, cl->populate_b, 2, NULL, gws, lws, 0, NULL, &event);
+    ocl_check(err, "clEnqueueNDRangeKernel failed");
+
+    return event;
+}
+
+// Meanwhile the matrix to multiply is always the same, the vector changes
+cl_event mat_vec_multiply(Solver *solver, cl_mem vec, cl_mem result) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+    cl_int arg = 0;
+
+    // Set kernel arguments
+    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_values_buffer);
+    ocl_check(err, "clSetKernelArg failed for csr_values_buffer");
+    arg++;
+
+    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_col_ind_buffer);
+    ocl_check(err, "clSetKernelArg failed for csr_col_ind_buffer");
+    arg++;
+
+    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_row_ptr_buffer);
+    ocl_check(err, "clSetKernelArg failed for csr_col_ind_buffer");
+    arg++;
+
+    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &vec);
+    ocl_check(err, "clSetKernelArg failed for vec");
+    arg++;
+
+    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &result);
+    ocl_check(err, "clSetKernelArg failed for result");
+    arg++;
+
+    //TODO: Unify local work size for every kernel
+    size_t local_mem_size = sizeof(float) * 16;
+    err = clSetKernelArg(cl->mat_vec_multiply, arg, local_mem_size, NULL);
+    ocl_check(err, "clSetKernelArg failed for vec");
+    arg++;
+
+    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(int), &solver->height);
+    ocl_check(err, "clSetKernelArg failed for height");
+    arg++;
+
+    //Launch the kernel
+    cl_event event;
+    size_t global_size = (solver->width * solver->height);
+    err = clEnqueueNDRangeKernel(cl->q, cl->mat_vec_multiply, 1, NULL,
+            &global_size, NULL, 0, NULL, &event);
     ocl_check(err, "clEnqueueNDRangeKernel failed");
 
     return event;

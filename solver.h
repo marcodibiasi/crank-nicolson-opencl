@@ -19,6 +19,7 @@ typedef struct{
 	cl_program prog;
 
     cl_mem u_current_buffer;
+    cl_mem x_buffer;
     cl_mem b_buffer;
 
     // CSRMatrix buffers
@@ -26,11 +27,21 @@ typedef struct{
     cl_mem csr_col_ind_buffer;
     cl_mem csr_values_buffer;
 
-    size_t populate_b_preferred_lws[2];
-    size_t dot_product_preferred_lws[2];
+    //size_t populate_b_preferred_lws[2];
+    //size_t dot_product_preferred_lws[2];
+    
+    /*
+    Unified local work size for every kernel for ease
+    for now the local work size is a fixed value
+    
+    TODO: Custom local work size (scalability, performances)
+    */
+    size_t lws;
 
+    cl_kernel zero_fill;
     cl_kernel populate_b;
     cl_kernel dot_product;
+    cl_kernel mat_vec_multiply;
 } OpenCLContext;
 
 typedef struct {
@@ -65,4 +76,6 @@ void free_CSR_matrix(CSRMatrix *matrix);
 void setup_coefficients_matrix(float rx, CSRMatrix *A, int width, int height);
 void debug_print_CSR(const CSRMatrix *A, int n);
 void setup_opencl_context(Solver *solver);
+cl_event zero_fill(Solver* solver);
 cl_event populate_b(Solver *solver);
+cl_event mat_vec_multiply(Solver *solver, cl_mem vec, cl_mem result);
