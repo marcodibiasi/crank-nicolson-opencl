@@ -63,10 +63,65 @@ it is better to have separate kernels for each operation.
 __kernel void dot_product(
     __global const float* a,
     __global const float* b,
+
     __global float* result,
-    const unsigned int size
+
+    __local float* local_memory,
+    const unsigned int lenght
 )
-{}
+{
+    int global_id = get_global_id(0);
+    int local_id = get_local_id(0);
+    int local_size = get_local_size(0);
+    int group_id = get_group_id(0);
+
+    float local_product = 0.0f;
+    if(global_id < lenght)
+        local_product = a[global_id] * b[global_id];
+
+    local_memory[local_id] = local_product;
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    for(int stride = local_size / 2; stride > 0; stride /= 2){
+        if(local_id < stride)
+            local_memory[local_id] = local_memory[local_id] + local_memory[local_id + stride];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    if(local_id == 0)
+        result[group_id] = local_memory[0];
+
+}
+
+__kernel void partial_sum_reduction(
+    __global const float* vec_in,
+    __global float* vec_out,
+
+    __local float* local_memory,
+
+    const int lenght
+)
+{
+    int global_id = get_global_id(0);
+    int local_id = get_local_id(0);
+    int local_size = get_local_size(0);
+    int group_id = get_group_id(0);
+
+    if(global_id < lenght)
+        local_memory[local_id] = vec_in[global_id];
+
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    for(int stride = local_size / 2; stride > 0; stride /= 2){
+        if(local_id < stride)
+            local_memory[local_id] = local_memory[local_id] + local_memory[local_id + stride];
+        barrier(CLK_LOCAL_MEM_FENCE);
+    }
+
+    if(local_id == 0)
+        vec_out[group_id] = local_memory[0];
+}
 
 __kernel void mat_vec_multiply(
 
@@ -87,7 +142,7 @@ __kernel void mat_vec_multiply(
     int local_id = get_local_id(0);
     int local_size = get_local_size(0);
 
-    if(row > rows) return;
+    if(row >= rows) return;
 
     // Get the non-zero values for each row
     int row_start = row_ptr[row];

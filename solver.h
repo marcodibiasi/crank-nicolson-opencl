@@ -19,7 +19,7 @@ typedef struct{
 	cl_program prog;
 
     cl_mem u_current_buffer;
-    cl_mem x_buffer;
+    cl_mem x_buffer;    // Unknown vector to store the Ax = b result, equivalent to u_next
     cl_mem b_buffer;
 
     // CSRMatrix buffers
@@ -33,13 +33,14 @@ typedef struct{
     /*
     Unified local work size for every kernel for ease
     for now the local work size is a fixed value
-    
+
     TODO: Custom local work size (scalability, performances)
     */
     size_t lws;
 
     cl_kernel zero_fill;
     cl_kernel populate_b;
+    cl_kernel parallel_sum_reduction;
     cl_kernel dot_product;
     cl_kernel mat_vec_multiply;
 } OpenCLContext;
@@ -77,5 +78,7 @@ void setup_coefficients_matrix(float rx, CSRMatrix *A, int width, int height);
 void debug_print_CSR(const CSRMatrix *A, int n);
 void setup_opencl_context(Solver *solver);
 cl_event zero_fill(Solver* solver);
+cl_event partial_sum_reduction(Solver *solver, cl_mem* vec_in, cl_mem* vec_out, size_t lenght);
+cl_event dot_product(Solver *solver, cl_mem* vec1, cl_mem* vec2, cl_mem* result, size_t lenght);
 cl_event populate_b(Solver *solver);
 cl_event mat_vec_multiply(Solver *solver, cl_mem vec, cl_mem result);

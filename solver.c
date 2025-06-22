@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include "solver.h"
 #include "ocl_boiler.h"
 
@@ -122,14 +123,48 @@ void conjugate_gradient(Solver *solver) {
     cl_int err;
     OpenCLContext *cl = &solver->cl;
 
-    // First step: Calculate initial residue r = b - Ax
+    /*
+    First step: Calculate initial residue r = b - Ax
+                since initial x is 0, r = b
+    */
     size_t lenght = solver->width * solver->height;
     cl_mem r_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
 	ocl_check(err, "clCreateBuffer failed");
 
-    cl_event mat_vec_multiply_evt = mat_vec_multiply(solver, cl->x_buffer, r_buffer);
-    clWaitForEvents(1, &mat_vec_multiply_evt);
-    clReleaseEvent(mat_vec_multiply_evt);
+    /*
+    Second step: set first search direction p = r 
+                since r = b, then p = b 
+                (we can skip few initial steps for ease)
+    */
+    cl_mem direction_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
+	ocl_check(err, "clCreateBuffer failed");
+
+    cl_event copy_buffer_evt;
+    err = clEnqueueCopyBuffer(cl->q, cl->b_buffer, direction_buffer, 0, 0, 
+        lenght * sizeof(float), 0, NULL, &copy_buffer_evt);
+    ocl_check(err, "clEnqueueCopyBuffer failed");
+
+    clWaitForEvents(1, &copy_buffer_evt);
+    clReleaseEvent(copy_buffer_evt);
+
+    /*
+    Third step: the main loop leads the result vector to an optimal solution with an error epsilon
+                we set epsilon to 10^(-5), but it may vary in future
+    */
+    float epsilon = 1e-5f;
+    float alpha;    // Gets the lenght of the step along the search direction p
+    float r_norm;
+    int max_iter = (int)sqrt(lenght);
+    int k = 0;
+
+    do{
+        // alpha = dot(r, r) / dot(p, mat_vec(A, p))
+
+        k++;
+    } while(r_norm > epsilon && k < max_iter);
+    // cl_event mat_vec_multiply_evt = mat_vec_multiply(solver, cl->x_buffer, r_buffer);
+    // clWaitForEvents(1, &mat_vec_multiply_evt);
+    // clReleaseEvent(mat_vec_multiply_evt);
 }
 
 float **run_simulation(Solver *solver, int steps) {
@@ -324,6 +359,9 @@ void setup_opencl_context(Solver *solver) {
     cl->populate_b = clCreateKernel(cl->prog, "populate_b", &err);  
     ocl_check(err, "clCreateKernel failed");
 
+    cl->parallel_sum_reduction = clCreateKernel(cl->prog, "partial_sum_reduction", &err);  
+    ocl_check(err, "clCreateKernel failed");
+
     cl->dot_product = clCreateKernel(cl->prog, "dot_product", &err);  
     ocl_check(err, "clCreateKernel failed");
 
@@ -381,9 +419,9 @@ cl_event zero_fill(Solver* solver) {
 
     // Launch the kernel 
     cl_event event;
-    size_t global_size = (solver->width * solver->height);
+    size_t gws = round_mul_up((solver->width * solver->height), cl->lws);
     err = clEnqueueNDRangeKernel(cl->q, cl->zero_fill, 1, NULL,
-            &global_size, NULL, 0, NULL, &event);
+            &gws, &cl->lws, 0, NULL, &event);
     ocl_check(err, "clEnqueueNDRangeKernel failed");
 
     return event;
@@ -436,6 +474,51 @@ cl_event populate_b(Solver *solver) {
     return event;
 }
 
+cl_event partial_sum_reduction(Solver *solver, cl_mem* vec_in, cl_mem* vec_out, size_t lenght) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+    cl_int arg = 0;
+
+    // Set kernel arguments
+    err = clSetKernelArg(cl->parallel_sum_reduction, arg, sizeof(cl_mem), vec_in);
+    ocl_check(err, "clSetKernelArg failed for vec_in");
+    arg++;
+
+    err = clSetKernelArg(cl->parallel_sum_reduction, arg, sizeof(cl_mem), vec_out);
+    ocl_check(err, "clSetKernelArg failed for vec_out");
+    arg++;
+
+    err = clSetKernelArg(cl->parallel_sum_reduction, arg, cl->lws * sizeof(float), NULL);
+    ocl_check(err, "clSetKernelArg failed for local_memory");
+    arg++;
+
+    err = clSetKernelArg(cl->parallel_sum_reduction, arg, sizeof(size_t), &lenght);
+    ocl_check(err, "clSetKernelArg failed for lenght");
+    arg++;
+
+    //Launch the kernel
+    cl_event event;
+    size_t gws = round_mul_up(lenght, cl->lws);
+    err = clEnqueueNDRangeKernel(cl->q, cl->parallel_sum_reduction, 1, NULL,
+            &gws, &cl->lws, 0, NULL, &event);
+    ocl_check(err, "clEnqueueNDRangeKernel failed");
+
+    return event;
+}
+
+cl_event dot_product(Solver *solver, cl_mem* vec1, cl_mem* vec2, cl_mem* result, size_t lenght) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+    cl_int arg = 0;
+
+    // Set kernel arguments
+
+    // Launch the kernel
+    cl_event event;
+
+    return event;
+}
+
 // Meanwhile the matrix to multiply is always the same, the vector changes
 cl_event mat_vec_multiply(Solver *solver, cl_mem vec, cl_mem result) {
     OpenCLContext *cl = &solver->cl;
@@ -452,7 +535,7 @@ cl_event mat_vec_multiply(Solver *solver, cl_mem vec, cl_mem result) {
     arg++;
 
     err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_row_ptr_buffer);
-    ocl_check(err, "clSetKernelArg failed for csr_col_ind_buffer");
+    ocl_check(err, "clSetKernelArg failed for csr_row_ptr_buffer");
     arg++;
 
     err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &vec);
@@ -466,7 +549,7 @@ cl_event mat_vec_multiply(Solver *solver, cl_mem vec, cl_mem result) {
     //TODO: Unify local work size for every kernel
     size_t local_mem_size = sizeof(float) * 16;
     err = clSetKernelArg(cl->mat_vec_multiply, arg, local_mem_size, NULL);
-    ocl_check(err, "clSetKernelArg failed for vec");
+    ocl_check(err, "clSetKernelArg failed for local memory");
     arg++;
 
     err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(int), &solver->height);
@@ -475,9 +558,9 @@ cl_event mat_vec_multiply(Solver *solver, cl_mem vec, cl_mem result) {
 
     //Launch the kernel
     cl_event event;
-    size_t global_size = (solver->width * solver->height);
+    size_t gws = round_mul_up((solver->width * solver->height), cl->lws);
     err = clEnqueueNDRangeKernel(cl->q, cl->mat_vec_multiply, 1, NULL,
-            &global_size, NULL, 0, NULL, &event);
+            &gws, &cl->lws, 0, NULL, &event);
     ocl_check(err, "clEnqueueNDRangeKernel failed");
 
     return event;
