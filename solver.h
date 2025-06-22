@@ -12,6 +12,17 @@ typedef struct{
 } CSRMatrix;
 
 typedef struct{
+    cl_kernel zero_fill;
+    cl_kernel populate_b;
+    cl_kernel parallel_sum_reduction;
+    cl_kernel dot_product;
+    cl_kernel mat_vec_multiply;
+    cl_kernel sum_vectors;
+    cl_kernel subtract_vectors;
+    cl_kernel scale_vector;
+} OpenCLKernels;
+
+typedef struct{
     cl_platform_id p;
 	cl_device_id d;
 	cl_context ctx;
@@ -38,11 +49,7 @@ typedef struct{
     */
     size_t lws;
 
-    cl_kernel zero_fill;
-    cl_kernel populate_b;
-    cl_kernel parallel_sum_reduction;
-    cl_kernel dot_product;
-    cl_kernel mat_vec_multiply;
+    OpenCLKernels kernels;
 } OpenCLContext;
 
 typedef struct {
@@ -71,14 +78,25 @@ typedef struct {
 Solver *setup_solver(int width, int height, float dx, float dy, float dt, float alpha, float *u_curr);
 void update_system(Solver *solver);
 float** run_simulation(Solver *solver, int steps);
+void conjugate_gradient(Solver *solver);
 CSRMatrix allocate_CSR_matrix(int width, int height);
 void free_solver(Solver *solver);
 void free_CSR_matrix(CSRMatrix *matrix);
 void setup_coefficients_matrix(float rx, CSRMatrix *A, int width, int height);
 void debug_print_CSR(const CSRMatrix *A, int n);
-void setup_opencl_context(Solver *solver);
+void setup_opencl_context(Solver* solver);
+float alpha_calculate(Solver* solver, cl_mem* r, cl_mem* p);
+void update_x(Solver *solver, cl_mem* p, float alpha, int lenght);
+void update_r(Solver *solver, cl_mem* r, cl_mem* p, cl_mem* r_next, float alpha, int lenght);
+void update_p(Solver *solver, cl_mem* r, cl_mem* p, float beta, int lenght);
+float dot_product_handler(Solver *solver, cl_mem *vec1, cl_mem *vec2, int lenght);
 cl_event zero_fill(Solver* solver);
-cl_event partial_sum_reduction(Solver *solver, cl_mem* vec_in, cl_mem* vec_out, size_t lenght);
-cl_event dot_product(Solver *solver, cl_mem* vec1, cl_mem* vec2, cl_mem* result, size_t lenght);
+cl_event partial_sum_reduction(Solver *solver, cl_mem* vec_in, cl_mem* vec_out, int lenght);
+cl_event dot_product(Solver *solver, cl_mem* vec1, cl_mem* vec2, cl_mem* result, int lenght);
 cl_event populate_b(Solver *solver);
 cl_event mat_vec_multiply(Solver *solver, cl_mem vec, cl_mem result);
+cl_event sum_vectors(Solver* solver, cl_mem* vec1, cl_mem* vec2, cl_mem* result, int lenght);
+cl_event scale_vector(Solver* solver, cl_mem* vec, float scalar, cl_mem* result, int lenght);
+
+//DEBUG FUNCTIONS (tnx chatgpt)
+int is_positive_definite_csr(const float* values, const int* col_ind,const int* row_ptr,int n,float val);

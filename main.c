@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
     */
 
     //Keeping the image conversion logic outside the simulation
-    int n_steps = 10;
+    int n_steps = 0;
     float **frames = malloc(n_steps * sizeof(float*));
     for (size_t i = 0; i < n_steps; i++)
         frames[i] = malloc(width * height * sizeof(float));

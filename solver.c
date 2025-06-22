@@ -94,6 +94,57 @@ Solver *setup_solver(int width, int height, float dx, float dy, float dt, float 
     return solver;
 }
 
+float **run_simulation(Solver *solver, int steps) {
+    if (!solver) {
+        fprintf(stderr, "Error: Solver is NULL.\n");
+        return NULL;
+    }
+
+
+    // Handling frames vector to store all the frames from the simulation
+    float **frames = malloc(steps * sizeof(float*));
+
+    frames[0] = malloc(solver->width * solver->height * sizeof(float));
+    memcpy(frames[0], solver->u_current, solver->width * solver->height * sizeof(float));
+
+    // Filling the x0 vector to start the resolution of Ax = b
+    cl_event zero_fill_evt = zero_fill(solver);
+    clWaitForEvents(1, &zero_fill_evt);
+    clReleaseEvent(zero_fill_evt);
+    
+
+    // Main loop
+    while(solver->time_step < steps) {   
+        printf("Step %d\n", solver->time_step);
+
+        update_system(solver);
+
+        solver->time_step++;
+
+        frames[solver->time_step] = malloc(solver->width * solver->height * sizeof(float));
+        memcpy(frames[solver->time_step], solver->u_current, solver->width * solver->height * sizeof(float));
+    }
+
+    // TESTING MODULES 
+    // size_t lenght = solver->width * solver->height;
+    // cl_mem try = clCreateBuffer(solver->cl.ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, NULL);
+    // cl_event mat_vec_multiply_evt = mat_vec_multiply(solver, solver->cl. b_buffer, try);
+    // printf(" %f ", dot_product_handler(solver, &solver->cl.b_buffer, &try, lenght));
+    //printf(" %f ", alpha_calculate(solver, &solver->cl.x_buffer, &solver->cl.b_buffer));
+    //conjugate_gradient(solver);
+
+    //DEBUGGING
+    // Checking if the CSR matrix is positive definite (apparently it is)
+    // for(int i = 0; i < 50; i++) {
+    //     float val = rand() % 1000 - 500; 
+    //     is_positive_definite_csr(solver->A.values, solver->A.col_ind, solver->A.row_ptr, 
+    //     solver->width * solver->height, val);
+    // }
+
+    clFinish(solver->cl.q);
+    return frames;
+}
+
 void update_system(Solver *solver){
     if (!solver->u_current) {
         fprintf(stderr, "Error: initial state (u_curr) is NULL.\n");
@@ -129,6 +180,8 @@ void conjugate_gradient(Solver *solver) {
     */
     size_t lenght = solver->width * solver->height;
     cl_mem r_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
+    err = clEnqueueCopyBuffer(cl->q, cl->b_buffer, r_buffer, 0, 0, 
+        lenght * sizeof(float), 0, NULL, NULL);
 	ocl_check(err, "clCreateBuffer failed");
 
     /*
@@ -149,7 +202,7 @@ void conjugate_gradient(Solver *solver) {
 
     /*
     Third step: the main loop leads the result vector to an optimal solution with an error epsilon
-                we set epsilon to 10^(-5), but it may vary in future
+                we set epsilon to 10^(-5), but it may vary in the future
     */
     float epsilon = 1e-5f;
     float alpha;    // Gets the lenght of the step along the search direction p
@@ -159,47 +212,157 @@ void conjugate_gradient(Solver *solver) {
 
     do{
         // alpha = dot(r, r) / dot(p, mat_vec(A, p))
+        alpha = alpha_calculate(solver, &r_buffer, &direction_buffer);
+        printf("Iteration %d: alpha = %.6f\n", k, alpha);
+
+        // Update the solution vector x = x + alpha * p
+        update_x(solver, &direction_buffer, alpha, lenght);
+
+        // Calculate the new residue r_(k+1) = r - alpha * mat_vec(A, p)
+        cl_mem r_next_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, 
+            lenght * sizeof(float), NULL, &err);
+        ocl_check(err, "clCreateBuffer failed for r_next_buffer");
+        update_r(solver, &r_buffer, &direction_buffer, &r_next_buffer, alpha, lenght);
+ 
+        // Calculate the norm of the residue ||r_(k+1)||
+        r_norm = dot_product_handler(solver, &r_next_buffer, &r_next_buffer, lenght);
+        printf("Iteration %d: Residue norm = %.6f\n", k, sqrt(r_norm));
+
+        // beta = dot(r_(k+1), r_(k+1)) / dot(r, r)
+        float beta = r_norm / dot_product_handler(solver, &r_buffer, &r_buffer, lenght);
+        printf("Iteration %d: beta = %.6f\n", k, beta);
+
+        // Update the search direction p = r + beta * p
+        update_p(solver, &r_next_buffer, &direction_buffer, beta, lenght);
+
+        // Update the residue for the next iteration
+        err = clEnqueueCopyBuffer(cl->q, r_next_buffer, r_buffer, 0, 0, 
+            lenght * sizeof(float), 0, NULL, NULL);
+        ocl_check(err, "clEnqueueCopyBuffer failed for r_buffer");
+
+        printf(" \n ");
 
         k++;
     } while(r_norm > epsilon && k < max_iter);
-    // cl_event mat_vec_multiply_evt = mat_vec_multiply(solver, cl->x_buffer, r_buffer);
-    // clWaitForEvents(1, &mat_vec_multiply_evt);
-    // clReleaseEvent(mat_vec_multiply_evt);
+
+    printf("\nConjugate Gradient converged after %d iterations with norm %.6f\n", k, r_norm);
 }
 
-float **run_simulation(Solver *solver, int steps) {
-    if (!solver) {
-        fprintf(stderr, "Error: Solver is NULL.\n");
-        return NULL;
-    }
+float alpha_calculate(Solver* solver, cl_mem *r, cl_mem *p) {
+    cl_int err;
+    OpenCLContext *cl = &solver->cl;
+    int lenght = solver->width * solver->height;
 
+    // r * r
+    float numerator = dot_product_handler(solver, r, r, lenght);
 
-    // Handling frames vector to store all the frames from the simulation
-    float **frames = malloc(steps * sizeof(float*));
+    // p * A * p 
+    cl_mem partial_denominator = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
+    ocl_check(err, "clCreateBuffer failed for partial_denominator");
 
-    frames[0] = malloc(solver->width * solver->height * sizeof(float));
-    memcpy(frames[0], solver->u_current, solver->width * solver->height * sizeof(float));
+    cl_event mat_vec_multiply_evt = mat_vec_multiply(solver, *p, partial_denominator);
+    clWaitForEvents(1, &mat_vec_multiply_evt);
+    clReleaseEvent(mat_vec_multiply_evt);
 
-    // Filling the x0 vector to start the resolution of Ax = b
-    cl_event zero_fill_evt = zero_fill(solver);
-    clWaitForEvents(1, &zero_fill_evt);
-    clReleaseEvent(zero_fill_evt);
+    float denominator = dot_product_handler(solver, p, &partial_denominator, lenght);
     
+    return numerator / denominator;
+}
 
-    // Main loop
-    while(solver->time_step < steps) {   
-        printf("Step %d\n", solver->time_step);
+void update_x(Solver *solver, cl_mem* p, float alpha, int lenght) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
 
-        update_system(solver);
+    // Create a buffer for the updated x
+    cl_mem x_next_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, 
+        lenght * sizeof(float), NULL, &err);
+    ocl_check(err, "clCreateBuffer failed for x_next_buffer");
 
-        solver->time_step++;
+    // alpha * p
+    cl_event scale_vector_evt = scale_vector(solver, p, alpha, p, lenght);
+    clWaitForEvents(1, &scale_vector_evt);
+    clReleaseEvent(scale_vector_evt);
 
-        frames[solver->time_step] = malloc(solver->width * solver->height * sizeof(float));
-        memcpy(frames[solver->time_step], solver->u_current, solver->width * solver->height * sizeof(float));
+    // Add the scaled p to x
+    cl_event sum_vectors_evt = sum_vectors(solver, p, &x_next_buffer, &cl->x_buffer, lenght);
+    clWaitForEvents(1, &sum_vectors_evt);
+    clReleaseEvent(sum_vectors_evt);
+
+    // Release the temporary buffer
+    clReleaseMemObject(x_next_buffer);
+}   
+
+void update_r(Solver *solver, cl_mem* r, cl_mem* p, cl_mem* r_next, float alpha, int lenght) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+
+    // A * p
+    cl_event mat_vec_multiply_evt = mat_vec_multiply(solver, *p, *r_next);
+    clWaitForEvents(1, &mat_vec_multiply_evt);
+    clReleaseEvent(mat_vec_multiply_evt);
+
+    // Scale the result by -alpha
+    cl_event scale_vector_evt = scale_vector(solver, r_next, -alpha, r_next, lenght);
+    clWaitForEvents(1, &scale_vector_evt);
+    clReleaseEvent(scale_vector_evt);
+
+    // Add the scaled result to the original residue
+    cl_event sum_vectors_evt = sum_vectors(solver, r, r_next, r_next, lenght);
+    clWaitForEvents(1, &sum_vectors_evt);
+    clReleaseEvent(sum_vectors_evt);
+}
+
+void update_p(Solver *solver, cl_mem* r, cl_mem* p, float beta, int lenght) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+
+    // Scale the previous search direction p by beta
+    cl_event scale_vector_evt = scale_vector(solver, p, beta, p, lenght);
+    clWaitForEvents(1, &scale_vector_evt);
+    clReleaseEvent(scale_vector_evt);
+
+    // Add the new residue r to the scaled search direction
+    cl_event sum_vectors_evt = sum_vectors(solver, r, p, p, lenght);
+    clWaitForEvents(1, &sum_vectors_evt);
+    clReleaseEvent(sum_vectors_evt);
+}
+
+float dot_product_handler(Solver *solver, cl_mem *vec1, cl_mem *vec2, int lenght) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+
+    //Partial dot product
+    cl_mem partial_dot_product = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, sizeof(float), NULL, &err);
+    cl_event r_dot_r = dot_product(solver, vec1, vec1, &partial_dot_product, lenght);
+    clWaitForEvents(1, &r_dot_r);
+    clReleaseEvent(r_dot_r);
+
+    size_t num_groups = round_div_up(solver->width * solver->height, cl->lws);
+
+    cl_mem temp_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, 
+        num_groups * sizeof(float), NULL, NULL);
+
+    cl_mem *in_buf = &partial_dot_product;
+    cl_mem *out_buf = &temp_buffer;
+
+    while(num_groups > 1) {
+        // Perform partial sum reduction
+        cl_event partial_sum_evt = partial_sum_reduction(solver, in_buf, out_buf, num_groups);
+        clWaitForEvents(1, &partial_sum_evt);
+        clReleaseEvent(partial_sum_evt);
+
+        // Swap buffers
+        cl_mem temp = *in_buf;
+        *in_buf = *out_buf;
+        *out_buf = temp;
+
+        num_groups = round_div_up(num_groups, cl->lws);
     }
 
-    clFinish(solver->cl.q);
-    return frames;
+    float final_result;
+    clEnqueueReadBuffer(cl->q, *in_buf, CL_TRUE, 0, sizeof(float), &final_result, 0, NULL, NULL);
+    
+    return final_result;
 }
 
 CSRMatrix allocate_CSR_matrix(int width, int height) {
@@ -317,6 +480,8 @@ void debug_print_CSR(const CSRMatrix *A, int n) {
 
 void setup_opencl_context(Solver *solver) {
     OpenCLContext *cl = &solver->cl;
+    OpenCLKernels *kernels = &solver->cl.kernels;
+
     cl->p = select_platform();
 	cl->d = select_device(cl->p);
 	cl->ctx = create_context(cl->p, cl->d);
@@ -353,19 +518,25 @@ void setup_opencl_context(Solver *solver) {
     ocl_check(err, "clCreateBuffer failed for csr_values_buffer");
     
     // Create kernels
-    cl->zero_fill = clCreateKernel(cl->prog, "fill_vector", &err);
+    kernels->zero_fill = clCreateKernel(cl->prog, "fill_vector", &err);
     ocl_check(err, "clCreateKernel failed");
 
-    cl->populate_b = clCreateKernel(cl->prog, "populate_b", &err);  
+    kernels->populate_b = clCreateKernel(cl->prog, "populate_b", &err);  
     ocl_check(err, "clCreateKernel failed");
 
-    cl->parallel_sum_reduction = clCreateKernel(cl->prog, "partial_sum_reduction", &err);  
+    kernels->parallel_sum_reduction = clCreateKernel(cl->prog, "partial_sum_reduction", &err);  
     ocl_check(err, "clCreateKernel failed");
 
-    cl->dot_product = clCreateKernel(cl->prog, "dot_product", &err);  
+    kernels->dot_product = clCreateKernel(cl->prog, "dot_product", &err);  
     ocl_check(err, "clCreateKernel failed");
 
-    cl->mat_vec_multiply = clCreateKernel(cl->prog, "mat_vec_multiply", &err);  
+    kernels->mat_vec_multiply = clCreateKernel(cl->prog, "mat_vec_multiply", &err);  
+    ocl_check(err, "clCreateKernel failed");
+
+    kernels->sum_vectors = clCreateKernel(cl->prog, "sum_vectors", &err);  
+    ocl_check(err, "clCreateKernel failed");
+
+    kernels->scale_vector = clCreateKernel(cl->prog, "scale_vector", &err);  
     ocl_check(err, "clCreateKernel failed");
     
     // New local work size logic
@@ -413,14 +584,14 @@ cl_event zero_fill(Solver* solver) {
     cl_int arg = 0;
 
     // Set kernel arguments 
-    err = clSetKernelArg(cl->zero_fill, arg, sizeof(cl_mem), &cl->x_buffer);
+    err = clSetKernelArg(cl->kernels.zero_fill, arg, sizeof(cl_mem), &cl->x_buffer);
     ocl_check(err, "clSetKernelArg failed for x_buffer");
     arg++;
 
     // Launch the kernel 
     cl_event event;
     size_t gws = round_mul_up((solver->width * solver->height), cl->lws);
-    err = clEnqueueNDRangeKernel(cl->q, cl->zero_fill, 1, NULL,
+    err = clEnqueueNDRangeKernel(cl->q, cl->kernels.zero_fill, 1, NULL,
             &gws, &cl->lws, 0, NULL, &event);
     ocl_check(err, "clEnqueueNDRangeKernel failed");
 
@@ -433,23 +604,23 @@ cl_event populate_b(Solver *solver) {
     cl_int arg = 0;
 
     // Set kernel arguments
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(cl_mem), &cl->u_current_buffer);
+    err = clSetKernelArg(cl->kernels.populate_b, arg, sizeof(cl_mem), &cl->u_current_buffer);
     ocl_check(err, "clSetKernelArg failed for u_current_buffer");
     arg++;
 
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(cl_mem), &cl->b_buffer);
+    err = clSetKernelArg(cl->kernels.populate_b, arg, sizeof(cl_mem), &cl->b_buffer);
     ocl_check(err, "clSetKernelArg failed for b_buffer");
     arg++;
 
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(float), &solver->rx);
+    err = clSetKernelArg(cl->kernels.populate_b, arg, sizeof(float), &solver->rx);
     ocl_check(err, "clSetKernelArg failed for rx");
     arg++;
 
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(int), &solver->width);
+    err = clSetKernelArg(cl->kernels.populate_b, arg, sizeof(int), &solver->width);
     ocl_check(err, "clSetKernelArg failed for width");
     arg++;
 
-    err = clSetKernelArg(cl->populate_b, arg, sizeof(int), &solver->height);
+    err = clSetKernelArg(cl->kernels.populate_b, arg, sizeof(int), &solver->height);
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
@@ -457,7 +628,7 @@ cl_event populate_b(Solver *solver) {
     //                         (cl->populate_b_preferred_lws[1] + 2);
 
     size_t local_mem_size = sizeof(float) * (cl->lws + 2) * (cl->lws + 2);
-    err = clSetKernelArg(cl->populate_b, arg, local_mem_size, NULL);
+    err = clSetKernelArg(cl->kernels.populate_b, arg, local_mem_size, NULL);
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
@@ -468,100 +639,213 @@ cl_event populate_b(Solver *solver) {
     size_t lws[2] = {cl->lws, cl->lws};
 
     cl_event event;
-    err = clEnqueueNDRangeKernel(cl->q, cl->populate_b, 2, NULL, gws, lws, 0, NULL, &event);
+    err = clEnqueueNDRangeKernel(cl->q, cl->kernels.populate_b, 2, NULL, gws, lws, 0, NULL, &event);
     ocl_check(err, "clEnqueueNDRangeKernel failed");
 
     return event;
 }
 
-cl_event partial_sum_reduction(Solver *solver, cl_mem* vec_in, cl_mem* vec_out, size_t lenght) {
+cl_event partial_sum_reduction(Solver *solver, cl_mem* vec_in, cl_mem* vec_out, int lenght) {
     OpenCLContext *cl = &solver->cl;
     cl_int err;
     cl_int arg = 0;
 
     // Set kernel arguments
-    err = clSetKernelArg(cl->parallel_sum_reduction, arg, sizeof(cl_mem), vec_in);
+    err = clSetKernelArg(cl->kernels.parallel_sum_reduction, arg, sizeof(cl_mem), vec_in);
     ocl_check(err, "clSetKernelArg failed for vec_in");
     arg++;
 
-    err = clSetKernelArg(cl->parallel_sum_reduction, arg, sizeof(cl_mem), vec_out);
+    err = clSetKernelArg(cl->kernels.parallel_sum_reduction, arg, sizeof(cl_mem), vec_out);
     ocl_check(err, "clSetKernelArg failed for vec_out");
     arg++;
 
-    err = clSetKernelArg(cl->parallel_sum_reduction, arg, cl->lws * sizeof(float), NULL);
+    err = clSetKernelArg(cl->kernels.parallel_sum_reduction, arg, cl->lws * sizeof(float), NULL);
     ocl_check(err, "clSetKernelArg failed for local_memory");
     arg++;
 
-    err = clSetKernelArg(cl->parallel_sum_reduction, arg, sizeof(size_t), &lenght);
+    err = clSetKernelArg(cl->kernels.parallel_sum_reduction, arg, sizeof(int), &lenght);
     ocl_check(err, "clSetKernelArg failed for lenght");
     arg++;
 
     //Launch the kernel
     cl_event event;
     size_t gws = round_mul_up(lenght, cl->lws);
-    err = clEnqueueNDRangeKernel(cl->q, cl->parallel_sum_reduction, 1, NULL,
+    err = clEnqueueNDRangeKernel(cl->q, cl->kernels.parallel_sum_reduction, 1, NULL,
             &gws, &cl->lws, 0, NULL, &event);
     ocl_check(err, "clEnqueueNDRangeKernel failed");
 
     return event;
 }
 
-cl_event dot_product(Solver *solver, cl_mem* vec1, cl_mem* vec2, cl_mem* result, size_t lenght) {
+cl_event dot_product(Solver *solver, cl_mem* vec1, cl_mem* vec2, cl_mem* result, int lenght) {
     OpenCLContext *cl = &solver->cl;
     cl_int err;
     cl_int arg = 0;
 
     // Set kernel arguments
+    err = clSetKernelArg(cl->kernels.dot_product, arg, sizeof(cl_mem), vec1);
+    ocl_check(err, "clSetKernelArg failed for vec1");
+    arg++;
+
+    err = clSetKernelArg(cl->kernels.dot_product, arg, sizeof(cl_mem), vec2);
+    ocl_check(err, "clSetKernelArg failed for vec2");
+    arg++;  
+
+    err = clSetKernelArg(cl->kernels.dot_product, arg, sizeof(cl_mem), result);
+    ocl_check(err, "clSetKernelArg failed for result");
+    arg++;
+
+    err = clSetKernelArg(cl->kernels.dot_product, arg, cl->lws * sizeof(float), NULL);
+    ocl_check(err, "clSetKernelArg failed for local_memory");
+    arg++;
+
+    err = clSetKernelArg(cl->kernels.dot_product, arg, sizeof(int), &lenght);
+    ocl_check(err, "clSetKernelArg failed for lenght");
+    arg++;
 
     // Launch the kernel
     cl_event event;
+    size_t gws = round_mul_up(lenght, cl->lws);
+    err = clEnqueueNDRangeKernel(cl->q, cl->kernels.dot_product, 1, NULL,
+            &gws, &cl->lws, 0, NULL, &event);
+    ocl_check(err, "clEnqueueNDRangeKernel failed");    
 
     return event;
 }
 
-// Meanwhile the matrix to multiply is always the same, the vector changes
+// While the matrix to multiply is always the same, the vector changes
 cl_event mat_vec_multiply(Solver *solver, cl_mem vec, cl_mem result) {
     OpenCLContext *cl = &solver->cl;
     cl_int err;
     cl_int arg = 0;
 
     // Set kernel arguments
-    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_values_buffer);
+    err = clSetKernelArg(cl->kernels.mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_values_buffer);
     ocl_check(err, "clSetKernelArg failed for csr_values_buffer");
     arg++;
 
-    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_col_ind_buffer);
+    err = clSetKernelArg(cl->kernels.mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_col_ind_buffer);
     ocl_check(err, "clSetKernelArg failed for csr_col_ind_buffer");
     arg++;
 
-    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_row_ptr_buffer);
+    err = clSetKernelArg(cl->kernels.mat_vec_multiply, arg, sizeof(cl_mem), &cl->csr_row_ptr_buffer);
     ocl_check(err, "clSetKernelArg failed for csr_row_ptr_buffer");
     arg++;
 
-    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &vec);
+    err = clSetKernelArg(cl->kernels.mat_vec_multiply, arg, sizeof(cl_mem), &vec);
     ocl_check(err, "clSetKernelArg failed for vec");
     arg++;
 
-    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(cl_mem), &result);
+    err = clSetKernelArg(cl->kernels.mat_vec_multiply, arg, sizeof(cl_mem), &result);
     ocl_check(err, "clSetKernelArg failed for result");
     arg++;
 
     //TODO: Unify local work size for every kernel
-    size_t local_mem_size = sizeof(float) * 16;
-    err = clSetKernelArg(cl->mat_vec_multiply, arg, local_mem_size, NULL);
+    size_t local_mem_size = sizeof(float) * cl->lws;
+    err = clSetKernelArg(cl->kernels.mat_vec_multiply, arg, local_mem_size, NULL);
     ocl_check(err, "clSetKernelArg failed for local memory");
     arg++;
 
-    err = clSetKernelArg(cl->mat_vec_multiply, arg, sizeof(int), &solver->height);
+    err = clSetKernelArg(cl->kernels.mat_vec_multiply, arg, sizeof(int), &solver->height);
     ocl_check(err, "clSetKernelArg failed for height");
     arg++;
 
     //Launch the kernel
     cl_event event;
     size_t gws = round_mul_up((solver->width * solver->height), cl->lws);
-    err = clEnqueueNDRangeKernel(cl->q, cl->mat_vec_multiply, 1, NULL,
+    err = clEnqueueNDRangeKernel(cl->q, cl->kernels.mat_vec_multiply, 1, NULL,
             &gws, &cl->lws, 0, NULL, &event);
     ocl_check(err, "clEnqueueNDRangeKernel failed");
 
     return event;
+}
+
+cl_event sum_vectors(Solver* solver, cl_mem* vec1, cl_mem* vec2, cl_mem* result, int lenght) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+    cl_int arg = 0;
+
+    // Set kernel arguments
+    err = clSetKernelArg(cl->kernels.sum_vectors, arg, sizeof(cl_mem), vec1);
+    ocl_check(err, "clSetKernelArg failed for vec1");
+    arg++;      
+
+    err = clSetKernelArg(cl->kernels.sum_vectors, arg, sizeof(cl_mem), vec2);
+    ocl_check(err, "clSetKernelArg failed for vec2");
+    arg++;  
+
+    err = clSetKernelArg(cl->kernels.sum_vectors, arg, sizeof(cl_mem), result);
+    ocl_check(err, "clSetKernelArg failed for result");
+    arg++;
+
+    err = clSetKernelArg(cl->kernels.sum_vectors, arg, sizeof(int), &lenght);
+    ocl_check(err, "clSetKernelArg failed for lenght");
+    arg++;
+
+    // Launch the kernel 
+    cl_event event;
+    size_t gws = round_mul_up(lenght, cl->lws);
+    err = clEnqueueNDRangeKernel(cl->q, cl->kernels.sum_vectors, 1, NULL,
+            &gws, &cl->lws, 0, NULL, &event);
+    ocl_check(err, "clEnqueueNDRangeKernel failed");    
+
+    return event;
+}
+
+cl_event scale_vector(Solver* solver, cl_mem* vec, float scale, cl_mem* result, int lenght) {
+    OpenCLContext *cl = &solver->cl;
+    cl_int err;
+    cl_int arg = 0;
+
+    // Set kernel arguments
+    err = clSetKernelArg(cl->kernels.scale_vector, arg, sizeof(cl_mem), vec);
+    ocl_check(err, "clSetKernelArg failed for vec");
+    arg++;
+
+    err = clSetKernelArg(cl->kernels.scale_vector, arg, sizeof(cl_mem), result);
+    ocl_check(err, "clSetKernelArg failed for result");
+    arg++;
+
+    err = clSetKernelArg(cl->kernels.scale_vector, arg, sizeof(float), &scale);
+    ocl_check(err, "clSetKernelArg failed for scale");
+    arg++;
+
+    err = clSetKernelArg(cl->kernels.scale_vector, arg, sizeof(int), &lenght);
+    ocl_check(err, "clSetKernelArg failed for lenght");
+    arg++;
+
+    // Launch the kernel 
+    cl_event event;
+    size_t gws = round_mul_up(lenght, cl->lws);
+    err = clEnqueueNDRangeKernel(cl->q, cl->kernels.scale_vector, 1, NULL,
+            &gws, &cl->lws, 0, NULL, &event);
+    ocl_check(err, "clEnqueueNDRangeKernel failed");    
+
+    return event;
+}
+
+int is_positive_definite_csr(const float* values, const int* col_ind, const int* row_ptr, int n, float value) {
+    float* x = malloc(n * sizeof(float));
+    float* Ax = calloc(n, sizeof(float));
+    for (int i = 0; i < n; ++i) x[i] = value;
+
+    // Matrice * vettore
+    for (int row = 0; row < n; ++row) {
+        for (int idx = row_ptr[row]; idx < row_ptr[row + 1]; ++idx) {
+            Ax[row] += values[idx] * x[col_ind[idx]];
+        }
+    }
+
+    // Calcola x^T A x
+    float xtAx = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        xtAx += x[i] * Ax[i];
+    }
+
+    free(x);
+    free(Ax);
+
+    printf("-----> %d\n", xtAx > 0.0f);
+
+    return xtAx > 0.0f;
 }

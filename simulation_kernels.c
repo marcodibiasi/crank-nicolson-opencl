@@ -67,7 +67,7 @@ __kernel void dot_product(
     __global float* result,
 
     __local float* local_memory,
-    const unsigned int lenght
+    const int lenght
 )
 {
     int global_id = get_global_id(0);
@@ -168,4 +168,28 @@ __kernel void mat_vec_multiply(
 
     if (local_id == 0)
         vec_out[row] = local_memory[0];
+}
+
+__kernel void sum_vectors(
+    __global const float* vec1,
+    __global const float* vec2,
+    __global float* result,
+    const int lenght
+)
+{
+    int global_id = get_global_id(0);
+    if (global_id < lenght) 
+        result[global_id] = vec1[global_id] + vec2[global_id];
+}
+
+__kernel void scale_vector(
+    __global const float* vec_in,
+    __global float* vec_out,
+    const float scale,
+    const int lenght
+)
+{
+    int global_id = get_global_id(0);
+    if (global_id < lenght) 
+        vec_out[global_id] = vec_in[global_id] * scale;
 }
