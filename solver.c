@@ -131,7 +131,7 @@ float **run_simulation(Solver *solver, int steps) {
     // cl_event mat_vec_multiply_evt = mat_vec_multiply(solver, solver->cl. b_buffer, try);
     // printf(" %f ", dot_product_handler(solver, &solver->cl.b_buffer, &try, lenght));
     //printf(" %f ", alpha_calculate(solver, &solver->cl.x_buffer, &solver->cl.b_buffer));
-    //conjugate_gradient(solver);
+    conjugate_gradient(solver);
 
     //DEBUGGING
     // Checking if the CSR matrix is positive definite (apparently it is)
@@ -170,7 +170,6 @@ void update_system(Solver *solver){
 
 //The type of the function may change in the future
 void conjugate_gradient(Solver *solver) {
-    // TODO: Implement the conjugate gradient method for solving the linear system
     cl_int err;
     OpenCLContext *cl = &solver->cl;
 
@@ -178,36 +177,55 @@ void conjugate_gradient(Solver *solver) {
     First step: Calculate initial residue r = b - Ax
                 since initial x is 0, r = b
     */
-    size_t lenght = solver->width * solver->height;
-    cl_mem r_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
+    size_t length = solver->width * solver->height;
+
+    cl_event copy_buffer_evt;
+    cl_mem r_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, length * sizeof(float), NULL, &err);
+
     err = clEnqueueCopyBuffer(cl->q, cl->b_buffer, r_buffer, 0, 0, 
-        lenght * sizeof(float), 0, NULL, NULL);
+        length * sizeof(float), 0, NULL, &copy_buffer_evt);
 	ocl_check(err, "clCreateBuffer failed");
+
+    clWaitForEvents(1, &copy_buffer_evt);
+    clReleaseEvent(copy_buffer_evt);
 
     /*
     Second step: set first search direction p = r 
                 since r = b, then p = b 
-                (we can skip few initial steps for ease)
     */
-    cl_mem direction_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, lenght * sizeof(float), NULL, &err);
+    cl_mem direction_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, length * sizeof(float), NULL, &err);
 	ocl_check(err, "clCreateBuffer failed");
 
-    cl_event copy_buffer_evt;
     err = clEnqueueCopyBuffer(cl->q, cl->b_buffer, direction_buffer, 0, 0, 
-        lenght * sizeof(float), 0, NULL, &copy_buffer_evt);
+        length * sizeof(float), 0, NULL, &copy_buffer_evt);
     ocl_check(err, "clEnqueueCopyBuffer failed");
 
     clWaitForEvents(1, &copy_buffer_evt);
     clReleaseEvent(copy_buffer_evt);
+
+    //
+    float* temp = malloc(sizeof(float) * length);
+    clEnqueueReadBuffer(cl->q, direction_buffer, CL_TRUE, 0, sizeof(float) * length, temp, 0, NULL, NULL);
+    for (int i = 0; i < 20; i++) {
+        printf("direction[%d] = %f\n", i, temp[i]);
+    }
+
+    clEnqueueReadBuffer(cl->q, r_buffer, CL_TRUE, 0, sizeof(float) * length, temp, 0, NULL, NULL);
+    for (int i = 0; i < 20; i++) {
+        printf("residue[%d] = %f\n", i, temp[i]);
+    }
+
+    free(temp);
+    //
 
     /*
     Third step: the main loop leads the result vector to an optimal solution with an error epsilon
                 we set epsilon to 10^(-5), but it may vary in the future
     */
     float epsilon = 1e-5f;
-    float alpha;    // Gets the lenght of the step along the search direction p
+    float alpha;    // Gets the length of the step along the search direction p
     float r_norm;
-    int max_iter = (int)sqrt(lenght);
+    int max_iter = (int)sqrt(length);
     int k = 0;
 
     do{
@@ -216,28 +234,28 @@ void conjugate_gradient(Solver *solver) {
         printf("Iteration %d: alpha = %.6f\n", k, alpha);
 
         // Update the solution vector x = x + alpha * p
-        update_x(solver, &direction_buffer, alpha, lenght);
+        update_x(solver, &direction_buffer, alpha, length);
 
         // Calculate the new residue r_(k+1) = r - alpha * mat_vec(A, p)
         cl_mem r_next_buffer = clCreateBuffer(cl->ctx, CL_MEM_READ_WRITE, 
-            lenght * sizeof(float), NULL, &err);
+            length * sizeof(float), NULL, &err);
         ocl_check(err, "clCreateBuffer failed for r_next_buffer");
-        update_r(solver, &r_buffer, &direction_buffer, &r_next_buffer, alpha, lenght);
+        update_r(solver, &r_buffer, &direction_buffer, &r_next_buffer, alpha, length);
  
         // Calculate the norm of the residue ||r_(k+1)||
-        r_norm = dot_product_handler(solver, &r_next_buffer, &r_next_buffer, lenght);
+        r_norm = dot_product_handler(solver, &r_next_buffer, &r_next_buffer, length);
         printf("Iteration %d: Residue norm = %.6f\n", k, sqrt(r_norm));
 
         // beta = dot(r_(k+1), r_(k+1)) / dot(r, r)
-        float beta = r_norm / dot_product_handler(solver, &r_buffer, &r_buffer, lenght);
+        float beta = r_norm / dot_product_handler(solver, &r_buffer, &r_buffer, length);
         printf("Iteration %d: beta = %.6f\n", k, beta);
 
         // Update the search direction p = r + beta * p
-        update_p(solver, &r_next_buffer, &direction_buffer, beta, lenght);
+        update_p(solver, &r_next_buffer, &direction_buffer, beta, length);
 
         // Update the residue for the next iteration
         err = clEnqueueCopyBuffer(cl->q, r_next_buffer, r_buffer, 0, 0, 
-            lenght * sizeof(float), 0, NULL, NULL);
+            length * sizeof(float), 0, NULL, NULL);
         ocl_check(err, "clEnqueueCopyBuffer failed for r_buffer");
 
         printf(" \n ");
